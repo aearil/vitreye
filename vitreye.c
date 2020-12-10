@@ -20,6 +20,8 @@ typedef struct {
 	size_t len;
 } TileLayout;
 
+static const int SCROLL_SENSITIVITY = 30;
+
 static SDL_Renderer *renderer = NULL;
 static SDL_Window *window = NULL;
 static Vec2i *rects = NULL;
@@ -27,6 +29,7 @@ static Vec2i winsize;
 static Vec2i winpos;
 static TileLayout layout = {NULL, 0};
 static SDL_Rect *bgrects, *fgrects;
+static int scrollpos = 0;
 
 static void
 gentestrects(Vec2i **rects, size_t count, Vec2i min, Vec2i max)
@@ -91,6 +94,16 @@ keyboard(SDL_Event *e)
 		quit();
 		break;
 	}
+}
+
+static void
+scroll(SDL_Event *e)
+{
+	int sign = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1;
+
+	scrollpos += sign * SCROLL_SENSITIVITY * e->wheel.y;
+	if (scrollpos > 0)
+		scrollpos = 0;
 }
 
 static int
@@ -204,14 +217,10 @@ draw()
 	SDL_RenderClear(renderer);
 
 	for (i = 0; i < layout.len; i++) {
-		SDL_Rect r = layout.tiles[i].outer;
-		if (r.x > winsize.x && r.y > winsize.y) {
-			bgrects[i] = (SDL_Rect){};
-			fgrects[i] = (SDL_Rect){};
-		} else {
-			bgrects[i] = r;
-			fgrects[i] = layout.tiles[i].inner;
-		}
+		bgrects[i] = layout.tiles[i].outer;
+		fgrects[i] = layout.tiles[i].inner;
+		bgrects[i].y += scrollpos;
+		fgrects[i].y += scrollpos;
 	}
 
 	SDL_SetRenderDrawColor(renderer, 0x33, 0x33, 0x33, 0xff);
@@ -242,6 +251,8 @@ main(int argc, char* argv[])
 				quit();
 			} else if (e.type == SDL_KEYDOWN) {
 				keyboard(&e);
+			} else if (e.type == SDL_MOUSEWHEEL) {
+				scroll(&e);
 			} else if (e.type == SDL_WINDOWEVENT
 					&& (e.window.event == SDL_WINDOWEVENT_EXPOSED ||
 					e.window.event == SDL_WINDOWEVENT_RESIZED)) {
