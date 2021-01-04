@@ -27,3 +27,4 @@ void sdlerrcheck(int line);
 char *readfile(const char *file);
 void efread(void *p, size_t s, size_t n, FILE *f);
 void efwrite(const void *p, size_t s, size_t n, FILE *f);
+void print_img(uint8_t *pixels, uint32_t w, uint32_t h, uint32_t maxw);

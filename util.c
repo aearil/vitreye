@@ -93,3 +93,21 @@ efwrite(const void *p, size_t s, size_t n, FILE *f)
 	if (fwrite(p, s, n, f) != n)
 		die("fwrite:");
 }
+
+void
+print_img(uint8_t *pixels, uint32_t w, uint32_t h, uint32_t maxw)
+{
+	const char c_int[] = {' ', '.', '-', '*', 'x', 'X', '0'};
+	for (uint32_t y = 0; y < h; y++) {
+		for (uint32_t x = 0; x < w; x++) {
+			uint8_t r, g, b;
+			r = pixels[(y * w + x) * 3];
+			g = pixels[(y * w + x) * 3 + 1];
+			b = pixels[(y * w + x) * 3 + 2];
+			int intensity = (r + g + b) / 128;
+			if (x < maxw)
+				printf("%c", c_int[intensity]);
+		}
+		printf("\n");
+	}
+}

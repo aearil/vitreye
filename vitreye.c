@@ -1,3 +1,4 @@
+#include <libffmpegthumbnailer/videothumbnailerc.h>
 #include <SDL2/SDL.h>
 
 #include "util.h"
@@ -8,7 +9,7 @@
 #define TILE_H 150
 #define PADDING 20
 #define FPS 30
-#define NB_RECTS 64
+//#define NB_RECTS 64
 
 typedef struct {
 	SDL_Rect outer;
@@ -24,12 +25,15 @@ static const int SCROLL_SENSITIVITY = 30;
 
 static SDL_Renderer *renderer = NULL;
 static SDL_Window *window = NULL;
+static SDL_Texture **textures = NULL;
 static Vec2i *rects = NULL;
 static Vec2i winsize;
 static Vec2i winpos;
 static TileLayout layout = {NULL, 0};
 static SDL_Rect *bgrects, *fgrects;
 static int scrollpos = 0;
+
+static int NB_RECTS = 64;
 
 static void
 gentestrects(Vec2i **rects, size_t count, Vec2i min, Vec2i max)
@@ -65,12 +69,6 @@ init(void)
 	if (!renderer)
 		sdldie("cannot create SDL renderer");
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-
-	gentestrects(&rects, NB_RECTS, (Vec2i){100, 100}, (Vec2i){2048, 2048});
-	layout.len = NB_RECTS;
-	layout.tiles = ecalloc(layout.len, sizeof(Tile));
-	bgrects = ecalloc(layout.len, sizeof(SDL_Rect));
-	fgrects = ecalloc(layout.len, sizeof(SDL_Rect));
 
 	return 1;
 }
@@ -228,6 +226,9 @@ draw()
 
 	SDL_SetRenderDrawColor(renderer, 0xee, 0xee, 0xee, 0xff);
 	SDL_RenderFillRects(renderer, fgrects, layout.len);
+	for (i = 0; i < NB_RECTS; i++)
+		if (SDL_RenderCopy(renderer, textures[i], NULL, &(fgrects[i])))
+			printf("RenderCopy error for i = %lu: %s\n", i, SDL_GetError());
 
 	SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0xff);
 	SDL_RenderPresent(renderer);
@@ -236,8 +237,58 @@ draw()
 int
 main(int argc, char* argv[])
 {
+	int i;
 	uint32_t ticksnext = 0;
+	video_thumbnailer *thumbnailer = NULL;
+	image_data *imgdata = NULL;
+
 	init();
+
+	thumbnailer = video_thumbnailer_create();
+	imgdata = video_thumbnailer_create_image_data();
+	// FIXME Check that size is correct when taking padding into account
+	video_thumbnailer_set_size(thumbnailer, TILE_W, TILE_H);
+	thumbnailer->maintain_aspect_ratio = 1;
+	// TODO detect if file is animated
+	thumbnailer->overlay_film_strip = 0;
+	thumbnailer->seek_percentage = 15;
+	thumbnailer->thumbnail_image_type = Rgb;
+
+	textures = ecalloc(argc - 1, sizeof(*textures));
+	rects = ecalloc(argc - 1, sizeof(*rects));
+
+	for (i = 1; i < argc; i++) {
+		printf("Loading %s...\n", argv[i]);
+		if (video_thumbnailer_generate_thumbnail_to_buffer(thumbnailer, argv[i], imgdata)) {
+			printf("Couldn't generate thumbnail for %s\n", argv[i]);
+			imgdata->image_data_width = 1;
+			imgdata->image_data_height = 1;
+			imgdata->image_data_ptr = NULL;
+		}
+		rects[i - 1] = (Vec2i){imgdata->image_data_width, imgdata->image_data_height};
+		/* /!\ SDL_PIXELFORMAT_RGB888 means XRGB8888.
+		 *     Use SDL_PIXELFORMAT_RGB24 instead for tightly packed data. */
+		textures[i - 1] = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24,
+											SDL_TEXTUREACCESS_STATIC,
+											imgdata->image_data_width,
+											imgdata->image_data_height);
+		if (!imgdata->image_data_ptr)
+			continue;
+		SDL_UpdateTexture(textures[i - 1], NULL, imgdata->image_data_ptr, imgdata->image_data_width * 3);
+		printf("  (%d, %d), %d channels, %d bytes\n", rects[i - 1].x, rects[i - 1].y,
+				imgdata->image_data_size / (rects[i - 1].x * rects[i - 1].y),
+				imgdata->image_data_size);
+		if (i == 1)
+			print_img(imgdata->image_data_ptr, rects[0].x, rects[0].y, 200);
+	}
+
+
+	//gentestrects(&rects, NB_RECTS, (Vec2i){100, 100}, (Vec2i){2048, 2048});
+	NB_RECTS = argc - 1;
+	layout.len = NB_RECTS;
+	layout.tiles = ecalloc(layout.len, sizeof(Tile));
+	bgrects = ecalloc(layout.len, sizeof(SDL_Rect));
+	fgrects = ecalloc(layout.len, sizeof(SDL_Rect));
 
 	for (;;) {
 		SDL_Event e;

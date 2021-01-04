@@ -2,7 +2,7 @@ PREFIX = /usr/local
 MANPREFIX = $(PREFIX)/share/man
 CFLAGS   = -std=c99 -pedantic -Wall -Wextra -g
 LDFLAGS  =
-LIBS = -lSDL2 -lpng -ljpeg
+LIBS = -lSDL2 -lffmpegthumbnailer
 
 vitreye: vitreye.o util.o
 	cc $(LDFLAGS) $(LIBS) $^ -o $@
