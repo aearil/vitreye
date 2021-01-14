@@ -19,6 +19,7 @@ typedef struct {
 typedef struct {
 	Tile *tiles;
 	size_t len;
+	Vec2i margin;
 } TileLayout;
 
 static const int SCROLL_SENSITIVITY = 30;
@@ -29,11 +30,14 @@ static SDL_Texture **textures = NULL;
 static Vec2i *rects = NULL;
 static Vec2i winsize;
 static Vec2i winpos;
-static TileLayout layout = {NULL, 0};
+static TileLayout layout = {NULL, 0, {0, 0}};
 static SDL_Rect *bgrects, *fgrects;
 static int scrollpos = 0;
+static int *cellsidx = NULL;
+static char **filenames = NULL;
 
 static int NB_RECTS = 64;
+static int NB_CELLS = 0;
 
 static void
 gentestrects(Vec2i **rects, size_t count, Vec2i min, Vec2i max)
@@ -95,6 +99,26 @@ keyboard(SDL_Event *e)
 }
 
 static void
+mouse(SDL_Event *e)
+{
+	switch (e->type) {
+	case SDL_MOUSEBUTTONUP:
+		if (e->button.button == SDL_BUTTON_LEFT) {
+			/* Print selected image and quit */
+			int x = e->button.x - layout.margin.x / 2;
+			int y = -scrollpos + e->button.y - layout.margin.y / 2;
+			int nx = winsize.x / TILE_W;
+			int i = y / (TILE_H + layout.margin.y) * nx + x / (TILE_W + layout.margin.x);
+			if (i < NB_CELLS && cellsidx[i] >= 0) {
+				fprintf(stdout, "%s\n", filenames[cellsidx[i]]);
+				quit();
+			}
+		}
+		break;
+	}
+}
+
+static void
 scroll(SDL_Event *e)
 {
 	int sign = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1;
@@ -105,7 +129,7 @@ scroll(SDL_Event *e)
 }
 
 static int
-getfreecell(int *occupied, size_t len, int width, Vec2i format)
+getfreecell(int *cellsidx, size_t len, size_t rectidx, int width, Vec2i format)
 {
 	size_t i;
 	int x, y, cx, cy;
@@ -124,13 +148,13 @@ getfreecell(int *occupied, size_t len, int width, Vec2i format)
 		empty = 1;
 		for (cx = x; cx < x + format.x && empty; cx++)
 			for (cy = y; cy < y + format.y && empty; cy++)
-				if (occupied[cy * width + cx])
+				if (cellsidx[cy * width + cx] >= 0)
 					empty = 0;
 		if (empty) {  /* We found a free space */
-			/* Mark space as occupied */
+			/* Mark space as occupied with the index of the rect */
 			for (cx = x; cx < x + format.x; cx++)
 				for (cy = y; cy < y + format.y; cy++)
-					occupied[cy * width + cx] = 1;
+					cellsidx[cy * width + cx] = rectidx;
 			return i;
 		}
 	}
@@ -141,20 +165,20 @@ getfreecell(int *occupied, size_t len, int width, Vec2i format)
 static void
 gentileslayout(TileLayout *layout)
 {
-	const int Y_MARGIN = 10;
-	// FIXME There is no guarantee this is enough in the worst case
-	const int NB_CELLS = NB_RECTS + 16;
 	size_t i;
 	int x = 0, y = 0;
-	int margin;
 	int nx, ny;
-	int *occupied;
 	SDL_Rect *r, *t;
 
 	nx = winsize.x / TILE_W;
 	ny = winsize.y / TILE_H;
-	occupied = ecalloc(NB_CELLS, sizeof(int));
-	margin = (winsize.x % TILE_W) / nx;
+
+	/* Reset cells index */
+	for (i = 0; i < NB_CELLS; i++)
+		cellsidx[i] = -1;
+
+	layout->margin.x = (winsize.x % TILE_W) / nx;
+	layout->margin.y = 10;
 
 	for (i = 0; i < layout->len; ++i) {
 		float ratiodiff = TILE_H / (float)TILE_W - rects[i].y / (float)rects[i].x;
@@ -171,18 +195,20 @@ gentileslayout(TileLayout *layout)
 		}
 		/* Use a greedy algorithm to layout the tiles. We're  hoping for enough
 		 * variety in the tiles to fill the holes left by high aspect ratio tiles */
-		j = getfreecell(occupied, NB_CELLS, nx, format);
-		if (j < 0)
+		j = getfreecell(cellsidx, NB_CELLS, i, nx, format);
+		if (j < 0) {
+			fprintf(stderr, "Couldn't layout all images.\n");
 			break;
+		}
 		x = j % nx;
 		y = j / nx;
 
 		r = &layout->tiles[i].outer;
 		t = &layout->tiles[i].inner;
-		r->w = TILE_W * format.x + margin * (format.x - 1);
-		r->h = TILE_H * format.y + Y_MARGIN * (format.y - 1);
-		r->x = x * (TILE_W + margin) + margin / 2;
-		r->y = y * (TILE_H + Y_MARGIN) + Y_MARGIN / 2;
+		r->w = TILE_W * format.x + layout->margin.x * (format.x - 1);
+		r->h = TILE_H * format.y + layout->margin.y * (format.y - 1);
+		r->x = x * (TILE_W + layout->margin.x) + layout->margin.x / 2;
+		r->y = y * (TILE_H + layout->margin.y) + layout->margin.y / 2;
 
 		ratio2 = r->h / (float)r->w - rects[i].y / (float)rects[i].x;
 		if (ratio2 > 0) {
@@ -197,8 +223,6 @@ gentileslayout(TileLayout *layout)
 			t->y = r->y;
 		}
 	}
-
-	FREE(occupied);
 }
 
 static void
@@ -254,8 +278,10 @@ main(int argc, char* argv[])
 	thumbnailer->seek_percentage = 15;
 	thumbnailer->thumbnail_image_type = Rgb;
 
-	textures = ecalloc(argc - 1, sizeof(*textures));
-	rects = ecalloc(argc - 1, sizeof(*rects));
+	NB_RECTS = argc - 1;
+	textures = ecalloc(NB_RECTS, sizeof(*textures));
+	rects = ecalloc(NB_RECTS, sizeof(*rects));
+	filenames = ecalloc(NB_RECTS, sizeof(char*));
 
 	for (i = 1; i < argc; i++) {
 		printf("Loading %s...\n", argv[i]);
@@ -265,6 +291,7 @@ main(int argc, char* argv[])
 			imgdata->image_data_height = 1;
 			imgdata->image_data_ptr = NULL;
 		}
+		filenames[i - 1] = argv[i];
 		rects[i - 1] = (Vec2i){imgdata->image_data_width, imgdata->image_data_height};
 		/* /!\ SDL_PIXELFORMAT_RGB888 means XRGB8888.
 		 *     Use SDL_PIXELFORMAT_RGB24 instead for tightly packed data. */
@@ -284,11 +311,14 @@ main(int argc, char* argv[])
 
 
 	//gentestrects(&rects, NB_RECTS, (Vec2i){100, 100}, (Vec2i){2048, 2048});
-	NB_RECTS = argc - 1;
+	// FIXME There is no guarantee this is enough in the worst case
+	// Maybe 3x NB_RECTS is enough to account for multi-cells rects
+	NB_CELLS = NB_RECTS * 3;
 	layout.len = NB_RECTS;
 	layout.tiles = ecalloc(layout.len, sizeof(Tile));
 	bgrects = ecalloc(layout.len, sizeof(SDL_Rect));
 	fgrects = ecalloc(layout.len, sizeof(SDL_Rect));
+	cellsidx = ecalloc(NB_CELLS, sizeof(int));
 
 	for (;;) {
 		SDL_Event e;
@@ -304,6 +334,9 @@ main(int argc, char* argv[])
 				keyboard(&e);
 			} else if (e.type == SDL_MOUSEWHEEL) {
 				scroll(&e);
+			} else if (e.type == SDL_MOUSEBUTTONUP ||
+					e.type == SDL_MOUSEBUTTONDOWN) {
+				mouse(&e);
 			} else if (e.type == SDL_WINDOWEVENT
 					&& (e.window.event == SDL_WINDOWEVENT_EXPOSED ||
 					e.window.event == SDL_WINDOWEVENT_RESIZED)) {
