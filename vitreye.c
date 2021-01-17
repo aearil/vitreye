@@ -19,7 +19,9 @@ typedef struct {
 typedef struct {
 	Tile *tiles;
 	size_t len;
+	size_t allocated;
 	Vec2i margin;
+	Vec2i div;
 } TileLayout;
 
 static const int SCROLL_SENSITIVITY = 30;
@@ -30,7 +32,7 @@ static SDL_Texture **textures = NULL;
 static Vec2i *rects = NULL;
 static Vec2i winsize;
 static Vec2i winpos;
-static TileLayout layout = {NULL, 0, {0, 0}};
+static TileLayout layout = {NULL, 0, {0, 0}, {0, 0}};
 static SDL_Rect *bgrects, *fgrects;
 static int scrollpos = 0;
 static int *cellsidx = NULL;
@@ -107,8 +109,7 @@ mouse(SDL_Event *e)
 			/* Print selected image and quit */
 			int x = e->button.x - layout.margin.x / 2;
 			int y = -scrollpos + e->button.y - layout.margin.y / 2;
-			int nx = winsize.x / TILE_W;
-			int i = y / (TILE_H + layout.margin.y) * nx + x / (TILE_W + layout.margin.x);
+			int i = y / (TILE_H + layout.margin.y) * layout.div.x + x / (TILE_W + layout.margin.x);
 			if (i < NB_CELLS && cellsidx[i] >= 0) {
 				fprintf(stdout, "%s\n", filenames[cellsidx[i]]);
 				quit();
@@ -162,67 +163,100 @@ getfreecell(int *cellsidx, size_t len, size_t rectidx, int width, Vec2i format)
 	return -1;
 }
 
+static int
+newtile(Vec2i *rect, TileLayout *layout, size_t idx, Tile *tile)
+{
+	SDL_Rect *r, *t;
+	float ratiodiff = TILE_H / (float)TILE_W - rect->y / (float)rect->x;
+	float ratio2;
+	int j, x, y;
+	Vec2i format;
+
+	if (ratiodiff > 0.4 && layout->div.x > 1) {
+		format = (Vec2i){2, 1};
+	} else if (ratiodiff < -0.4) {
+		format = (Vec2i){1, 2};
+	} else {
+		format = (Vec2i){1, 1};
+	}
+	/* Use a greedy algorithm to layout the tiles. We're  hoping for enough
+	 * variety in the tiles to fill the holes left by high aspect ratio tiles */
+	j = getfreecell(cellsidx, NB_CELLS, idx, layout->div.x, format);
+	if (j < 0) {
+		fprintf(stderr, "Couldn't layout all images.\n");
+		return 0;
+	}
+	x = j % layout->div.x;
+	y = j / layout->div.x;
+
+	r = &tile->outer;
+	t = &tile->inner;
+	r->w = TILE_W * format.x + layout->margin.x * (format.x - 1);
+	r->h = TILE_H * format.y + layout->margin.y * (format.y - 1);
+	r->x = x * (TILE_W + layout->margin.x) + layout->margin.x / 2;
+	r->y = y * (TILE_H + layout->margin.y) + layout->margin.y / 2;
+
+	ratio2 = r->h / (float)r->w - rect->y / (float)rect->x;
+	if (ratio2 > 0) {
+		t->w = r->w;
+		t->h = r->w * rect->y / rect->x;
+		t->x = r->x;
+		t->y = r->y + (r->h - t->h) / 2;
+	} else {
+		t->w = r->h * rect->x / rect->y;
+		t->h = r->h;
+		t->x = r->x + (r->w - t->w) / 2;
+		t->y = r->y;
+	}
+	return 1;
+}
+
 static void
 gentileslayout(TileLayout *layout)
 {
 	size_t i;
-	int x = 0, y = 0;
-	int nx, ny;
-	SDL_Rect *r, *t;
-
-	nx = winsize.x / TILE_W;
-	ny = winsize.y / TILE_H;
+	Tile tile;
 
 	/* Reset cells index */
 	for (i = 0; i < NB_CELLS; i++)
 		cellsidx[i] = -1;
 
-	layout->margin.x = (winsize.x % TILE_W) / nx;
+	layout->div.x = winsize.x / TILE_W;
+	layout->div.y = winsize.y / TILE_H;
+	layout->margin.x = (winsize.x % TILE_W) / layout->div.x;
 	layout->margin.y = 10;
 
 	for (i = 0; i < layout->len; ++i) {
-		float ratiodiff = TILE_H / (float)TILE_W - rects[i].y / (float)rects[i].x;
-		float ratio2;
-		int j;
-		Vec2i format;
-
-		if (ratiodiff > 0.4 && nx > 1) {
-			format = (Vec2i){2, 1};
-		} else if (ratiodiff < -0.4) {
-			format = (Vec2i){1, 2};
-		} else {
-			format = (Vec2i){1, 1};
-		}
-		/* Use a greedy algorithm to layout the tiles. We're  hoping for enough
-		 * variety in the tiles to fill the holes left by high aspect ratio tiles */
-		j = getfreecell(cellsidx, NB_CELLS, i, nx, format);
-		if (j < 0) {
-			fprintf(stderr, "Couldn't layout all images.\n");
-			break;
-		}
-		x = j % nx;
-		y = j / nx;
-
-		r = &layout->tiles[i].outer;
-		t = &layout->tiles[i].inner;
-		r->w = TILE_W * format.x + layout->margin.x * (format.x - 1);
-		r->h = TILE_H * format.y + layout->margin.y * (format.y - 1);
-		r->x = x * (TILE_W + layout->margin.x) + layout->margin.x / 2;
-		r->y = y * (TILE_H + layout->margin.y) + layout->margin.y / 2;
-
-		ratio2 = r->h / (float)r->w - rects[i].y / (float)rects[i].x;
-		if (ratio2 > 0) {
-			t->w = r->w;
-			t->h = r->w * rects[i].y / rects[i].x;
-			t->x = r->x;
-			t->y = r->y + (r->h - t->h) / 2;
-		} else {
-			t->w = r->h * rects[i].x / rects[i].y;
-			t->h = r->h;
-			t->x = r->x + (r->w - t->w) / 2;
-			t->y = r->y;
-		}
+		if (newtile(&rects[i], layout, i, &tile))
+			layout->tiles[i] = tile;
 	}
+}
+
+static int
+loadthumbnail(const char *path, video_thumbnailer *vt, image_data *data,
+		size_t idx, Vec2i *rect, SDL_Texture **texture, TileLayout *layout)
+{
+	Tile tile;
+	if (video_thumbnailer_generate_thumbnail_to_buffer(vt, path, data)) {
+		data->image_data_width = 1;
+		data->image_data_height = 1;
+		data->image_data_ptr = NULL;
+	}
+	*rect = (Vec2i){data->image_data_width, data->image_data_height};
+	/* /!\ SDL_PIXELFORMAT_RGB888 means XRGB8888.
+	 *     Use SDL_PIXELFORMAT_RGB24 instead for tightly packed data. */
+	*texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24,
+								SDL_TEXTUREACCESS_STATIC,
+								data->image_data_width,
+								data->image_data_height);
+	if (!data->image_data_ptr)
+		return 0;
+
+	SDL_UpdateTexture(*texture, NULL, data->image_data_ptr, data->image_data_width * 3);
+	if (idx < layout->len && newtile(rect, layout, idx, &tile))
+		layout->tiles[idx] = tile;
+
+	return 1;
 }
 
 static void
@@ -250,7 +284,7 @@ draw()
 
 	SDL_SetRenderDrawColor(renderer, 0xee, 0xee, 0xee, 0xff);
 	SDL_RenderFillRects(renderer, fgrects, layout.len);
-	for (i = 0; i < NB_RECTS; i++)
+	for (i = 0; i < layout.len; i++)
 		if (SDL_RenderCopy(renderer, textures[i], NULL, &(fgrects[i])))
 			printf("RenderCopy error for i = %lu: %s\n", i, SDL_GetError());
 
@@ -284,29 +318,7 @@ main(int argc, char* argv[])
 	filenames = ecalloc(NB_RECTS, sizeof(char*));
 
 	for (i = 1; i < argc; i++) {
-		printf("Loading %s...\n", argv[i]);
-		if (video_thumbnailer_generate_thumbnail_to_buffer(thumbnailer, argv[i], imgdata)) {
-			printf("Couldn't generate thumbnail for %s\n", argv[i]);
-			imgdata->image_data_width = 1;
-			imgdata->image_data_height = 1;
-			imgdata->image_data_ptr = NULL;
-		}
 		filenames[i - 1] = argv[i];
-		rects[i - 1] = (Vec2i){imgdata->image_data_width, imgdata->image_data_height};
-		/* /!\ SDL_PIXELFORMAT_RGB888 means XRGB8888.
-		 *     Use SDL_PIXELFORMAT_RGB24 instead for tightly packed data. */
-		textures[i - 1] = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24,
-											SDL_TEXTUREACCESS_STATIC,
-											imgdata->image_data_width,
-											imgdata->image_data_height);
-		if (!imgdata->image_data_ptr)
-			continue;
-		SDL_UpdateTexture(textures[i - 1], NULL, imgdata->image_data_ptr, imgdata->image_data_width * 3);
-		printf("  (%d, %d), %d channels, %d bytes\n", rects[i - 1].x, rects[i - 1].y,
-				imgdata->image_data_size / (rects[i - 1].x * rects[i - 1].y),
-				imgdata->image_data_size);
-		if (i == 1)
-			print_img(imgdata->image_data_ptr, rects[0].x, rects[0].y, 200);
 	}
 
 
@@ -314,10 +326,11 @@ main(int argc, char* argv[])
 	// FIXME There is no guarantee this is enough in the worst case
 	// Maybe 3x NB_RECTS is enough to account for multi-cells rects
 	NB_CELLS = NB_RECTS * 3;
-	layout.len = NB_RECTS;
-	layout.tiles = ecalloc(layout.len, sizeof(Tile));
-	bgrects = ecalloc(layout.len, sizeof(SDL_Rect));
-	fgrects = ecalloc(layout.len, sizeof(SDL_Rect));
+	layout.len = 0;
+	layout.allocated = NB_RECTS;
+	layout.tiles = ecalloc(layout.allocated, sizeof(Tile));
+	bgrects = ecalloc(layout.allocated, sizeof(SDL_Rect));
+	fgrects = ecalloc(layout.allocated, sizeof(SDL_Rect));
 	cellsidx = ecalloc(NB_CELLS, sizeof(int));
 
 	for (;;) {
@@ -347,6 +360,14 @@ main(int argc, char* argv[])
 		}
 
 		draw();
+
+
+		// Load one thumbnail per frame, until we've loaded everything
+		if (layout.len < layout.allocated) {
+			i = layout.len++;
+			if (!loadthumbnail(filenames[i], thumbnailer, imgdata, i, &rects[i], &textures[i], &layout))
+				fprintf(stderr, "Couldn't generate thumbnail for %s\n", filenames[i]);
+		}
 	}
 
 	quit();
